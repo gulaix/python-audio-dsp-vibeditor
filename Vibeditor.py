@@ -4,25 +4,32 @@ import time
 
 fs = 44100
 frequenza = 440.06
-campioni_totali = 0   
+fase_attuale = 0.0  #sostituisce campioni_totali = 0   
 
 def process_audio (outdata, frames, time_info, status): #funzione callback --> scheda audio
-    global campioni_totali, frequenza
+    global fase_attuale, frequenza
+    
+    #calcoliamo gli step di fase in base a frequenza attuale
+    incremento_fase = 2 * np.pi * frequenza / fs #Δϕ=2π⋅f/fs | f=cicli/s fs=campioni/s |
+                                                 #--analisi_dimens--> [f]/[fs]=cicli/campioni |
+                                                 # si fa ⋅2π per trasformare in RAD
 
-    #array grande frames (512) assegnato ad i
-    i = np.arange(frames)
+    #array degli step del buffer assegnato a passi [0, 1, 2... 511]
+    passi = np.arange(frames)
 
-    #calcoliamo tempo per ogni slot del buffer i
-    t = (campioni_totali + i) / fs  #es. siamo a t=2s  c_t=880  fs=440  -->  (880+0)/440=2s (880+1)/440=2.002s (880+2)/440=2.004s ecc...
+    #calcoliamo fase  di ogni step (NB: partiamo da dove eravamo rimasti -fase_attuale-)
+    fasi = fase_attuale + (passi * incremento_fase)
 
-    #calcoliamo i valor di ampiezza sul buffer (NB: nessun ciclo, tutto simultaneamente)
-    onda = np.sin(2 * np.pi * frequenza * t)
+    #calcoliamo onda
+    onda = np.sin(fasi)
 
-    #aggiustamento matriciale x sounddevice
-    outdata[:] = onda.reshape(-1, 1)
+    #dopo aver riempito il buffer, salviamo la fase attuale sommata ai 512 Δϕ
+    #pronta ad essere utilizzata per il prossimo buffer.
+    # -- % (2 * np.pi) --  per evitare che il numero non incrementi a dismisura
+    fase_attuale = (fase_attuale + frames * incremento_fase) % (2 * np.pi)
 
-    #passiamo al prosimo buffer
-    campioni_totali += frames
+    #formatto
+    outdata[:] = onda.reshape(-1, 1).astype(np.float32)
 
 print("SYNTH ON: CTR+C FOR SHUT OFF")
 
