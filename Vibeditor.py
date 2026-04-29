@@ -1,13 +1,16 @@
-import sounddevice as sd 
-import numpy as np 
+import sounddevice as sd
+import numpy as np
 import time
 
 fs = 44100
 frequenza = 440.06
 fase_attuale = 0.0  #sostituisce campioni_totali = 0   
 
+#selettore waveshape
+tipo_onda = "SAW" #cambia in "SIN" "SQR" "SAW"
+
 def process_audio (outdata, frames, time_info, status): #funzione callback --> scheda audio
-    global fase_attuale, frequenza
+    global fase_attuale, frequenza, tipo_onda
     
     #calcoliamo gli step di fase in base a frequenza attuale
     incremento_fase = 2 * np.pi * frequenza / fs #Δϕ=2π⋅f/fs | f=cicli/s fs=campioni/s |
@@ -17,12 +20,28 @@ def process_audio (outdata, frames, time_info, status): #funzione callback --> s
     #array degli step del buffer assegnato a passi [0, 1, 2... 511]
     passi = np.arange(frames)
 
-    #calcoliamo fase  di ogni step (NB: partiamo da dove eravamo rimasti -fase_attuale-)
-    fasi = fase_attuale + (passi * incremento_fase)
+    #calcoliamo fase  di ogni step (a diff. di prima ora normalizzo array di fasi in [0,2π])
+    fasi = (fase_attuale + (passi * incremento_fase)) % (2 * np.pi) #SAW e SQR richiedonou una
+                                                                    #fase strettamente limitata
+                                                                    #per generare fronti di discesa
+    # --- BLOCCO SELETTORI FORME D'ONDA --- #                       #corretti
 
-    #calcoliamo onda
-    onda = np.sin(fasi)
+    if tipo_onda == "SIN":
+        onda = np.sin(fasi)
 
+    elif tipo_onda == "SAW":
+        # 0<=fasi<=2π --> :π --> 0<=fasi<=2 --> -1 --> -1<=fasi<=1
+        #inoltre all'aumento delle fasi la funzione cresce linearmente 
+        #fino ad 1 (2π), crollando a -1 superato i 2π
+        onda = (fasi / np.pi) - 1.0
+
+    elif tipo_onda == "SQR":
+        # [fasi<π] --> onda=1    [else] --> onda=-1
+        onda = np.where(fasi < np.pi, 1.0, -1.0)
+
+    else:
+        onda = np.zeros(frames)
+        
     #dopo aver riempito il buffer, salviamo la fase attuale sommata ai 512 Δϕ
     #pronta ad essere utilizzata per il prossimo buffer.
     # -- % (2 * np.pi) --  per evitare che il numero non incrementi a dismisura
