@@ -54,12 +54,12 @@ def process_audio (outdata, frames, time_info, status): #funzione callback
 
     # --- motore ADSR --- #
     #calcoliamo di quanto deve cambiare il volume per ogni campione
-    attack_delta = 1.0 / (0.001 * fs) #NUM: (1.0 - 0) = 1.0 --> max_da_raggiungere
+    attack_delta = 1.0 / (max(attack_t, 0.001) * fs) #NUM: (1.0 - 0) = 1.0 --> max_da_raggiungere
                                                      #DEN: tempo_di_attacco * 44100Hz
 
-    decay_delta = (1.0 - sustain_lvl) / (0.001 * fs) #(1.0 - sustain_lvl) --> per arrivare al sustain
+    decay_delta = (1.0 - sustain_lvl) / (max(decay_t, 0.001) * fs) #(1.0 - sustain_lvl) --> per arrivare al sustain
 
-    release_delta = sustain_lvl / (0.001 * fs)
+    release_delta = sustain_lvl / (max(release_t, 0.001) * fs)
 
     envelope_buffer = np.zeros(frames) #envelope_buffer[i] per ciclo for
 
