@@ -2,126 +2,96 @@ import sounddevice as sd
 import numpy as np
 import time
 
+class Voice:  #classe che mi istanzierà ogni voce (nota) che premerò
+    def __init__(self, frequency, fs=44100):  #costruttore
+        self.fs = fs
+        self.frequency = frequency
+        self.current_phase = 0.0
+        self.current_amplitude = 0.0
+        self.envelope_state = "IDLE"  #IDLE, ATTACK, DECAY, SUSTAIN, RELEASE
+        
+        #parametri ADSR (settali a piacimento)
+        self.attack_t = 0.01
+        self.decay_t = 0.5
+        self.sustain_lvl = 0.4
+        self.release_t = 0.8
+
+    def trigger_on(self): #servirà per la pressione dei tasti
+        self.envelope_state = "ATTACK"
+
+    def trigger_off(self): #rilascio tasti
+        if self.envelope_state != "IDLE":
+            self.envelope_state = "RELEASE"
+
+    def render(self, frames, wave_type="SIN"):  #motore di calcolo chiamato a riga 78
+        #1 calcolo oscillatore
+        phase_increment = 2 * np.pi * self.frequency / self.fs
+        steps = np.arange(frames)
+        phases = (self.current_phase + (steps * phase_increment)) % (2 * np.pi)
+        self.current_phase = (self.current_phase + frames * phase_increment) % (2 * np.pi)
+
+        if wave_type == "SIN":
+            wave = np.sin(phases)
+        elif wave_type == "SAW":
+            wave = (phases / np.pi) - 1.0
+        elif wave_type == "SQR":
+            wave = np.where(phases < np.pi, 1.0, -1.0)
+        else:
+            wave = np.zeros(frames)
+
+        #2 calcolo ADSR
+        attack_delta = 1.0 / (max(self.attack_t, 0.001) * self.fs)
+        decay_delta = (1.0 - self.sustain_lvl) / (max(self.decay_t, 0.001) * self.fs)
+        release_delta = self.sustain_lvl / (max(self.release_t, 0.001) * self.fs)
+        
+        envelope_buffer = np.zeros(frames)
+
+        for i in range(frames):
+            if self.envelope_state == "ATTACK":
+                self.current_amplitude += attack_delta
+                if self.current_amplitude >= 1.0:
+                    self.current_amplitude = 1.0
+                    self.envelope_state = "DECAY"
+            elif self.envelope_state == "DECAY":
+                self.current_amplitude -= decay_delta
+                if self.current_amplitude <= self.sustain_lvl:
+                    self.current_amplitude = self.sustain_lvl
+                    self.envelope_state = "SUSTAIN"
+            elif self.envelope_state == "RELEASE":
+                self.current_amplitude -= release_delta
+                if self.current_amplitude <= 0.0:
+                    self.current_amplitude = 0.0
+                    self.envelope_state = "IDLE"
+            
+            envelope_buffer[i] = self.current_amplitude
+
+        return wave * envelope_buffer
+
+# --- CONFIGURAZIONE --- #
 fs = 44100
-frequency = 440.00
-current_phase = 0.0
-wave_type = "SIN" #cambia in "SIN" "SQR" "SAW"
+#creiamo una singola istanza per ora (test monofonico)
+vocal_voice = Voice(440.0, fs)
+wave_type = "SAW"
 
-#parametri ADSR
-attack_t = 0.001
-decay_t = 0.5
-sustain_lvl = 0.4
-release_t = 0.8
-
-#variabili di stato
-current_amplitude = 0.0
-envelope_state = "IDLE"  # IDLE, ATTACK, DECAY, SUSTAIN, RELEASE
-
-def process_audio (outdata, frames, time_info, status): #funzione callback
-    global current_phase, frequency, wave_type
-    global current_amplitude, envelope_state
+def process_audio(outdata, frames, time_info, status): #callback molto snellita
+    #chiediamo alla voce di generare il suo chunk audio
+    audio_chunk = vocal_voice.render(frames, wave_type)
     
-    #calcoliamo gli step di fase in base a frequenza attuale
-    phase_increment = 2 * np.pi * frequency / fs #Δϕ=2π⋅f/fs | f=cicli/s fs=campioni/s |
-                                                 #--analisi_dimens--> [f]/[fs]=cicli/campioni |
-                                                 # si fa ⋅2π per trasformare in RAD
+    #formattazione per scheda audio
+    outdata[:] = audio_chunk.reshape(-1, 1).astype(np.float32)
 
-    #array degli step del buffer assegnato a passi [0, 1, 2... 511]
-    steps = np.arange(frames)
+print("SYNTH OOP ON: CTRL+C TO STOP")
 
-    #calcoliamo fase  di ogni step (a diff. di prima ora normalizzo array di fasi in [0,2π])
-    phases = (current_phase + (steps * phase_increment)) % (2 * np.pi) #SAW e SQR richiedonou una
-                                                                       #fase strettamente limitata
-                                                                       #per generare fronti di discesa
-    # --- BLOCCO SELETTORI FORME D'ONDA --- #                          #corretti
-
-    if wave_type == "SIN":
-        wave = np.sin(phases)
-
-    elif wave_type == "SAW":
-        # 0<=fasi<=2π --> :π --> 0<=fasi<=2 --> -1 --> -1<=fasi<=1
-        #inoltre all'aumento delle fasi la funzione cresce linearmente 
-        #fino ad 1 (2π), crollando a -1 superato i 2π
-        wave = (phases / np.pi) - 1.0
-
-    elif wave_type == "SQR":
-        # [fasi<π] --> onda=1    [else] --> onda=-1
-        wave = np.where(phases < np.pi, 1.0, -1.0)
-
-    else:
-        wave = np.zeros(frames) #preveniamo errore: tutto a zero
-
-
-    # --- motore ADSR --- #
-    #calcoliamo di quanto deve cambiare il volume per ogni campione
-    attack_delta = 1.0 / (max(attack_t, 0.001) * fs) #NUM: (1.0 - 0) = 1.0 --> max_da_raggiungere
-                                                     #DEN: tempo_di_attacco * 44100Hz
-
-    decay_delta = (1.0 - sustain_lvl) / (max(decay_t, 0.001) * fs) #(1.0 - sustain_lvl) --> per arrivare al sustain
-
-    release_delta = sustain_lvl / (max(release_t, 0.001) * fs)
-
-    envelope_buffer = np.zeros(frames) #envelope_buffer[i] per ciclo for
-
-# --- CICLO FOR: ADSR CAMPIONE PER CAMPIONE --- #
-    # perche usare un for --> riempire envelope_buffer uno step alla volta [i=0, 1... 511]
-    # questo ci permette di cambiare stat (es: ATTACK --> DECAY) nell'istante esatto 
-    # in cui tocchiamo il limite (es: 1.0), anche se succede esattamente a metà del buffer
-    # [se calcolassimo tutto il blocco in una volta sola, non potremmo cambiare pendenza a metà]
-    for i in range(frames):
-        if envelope_state == "ATTACK":
-            current_amplitude += attack_delta
-            if current_amplitude >= 1.0:
-                current_amplitude = 1.0
-                envelope_state = "DECAY"
-
-        elif envelope_state == "DECAY":
-            current_amplitude -= decay_delta
-            if current_amplitude <= sustain_lvl:
-                current_amplitude = sustain_lvl
-                envelope_state = "SUSTAIN"
-
-        elif envelope_state == "SUSTAIN":
-            pass
-
-        elif envelope_state == "RELEASE":
-            current_amplitude -= release_delta
-            if current_amplitude <= 0.0:
-                current_amplitude = 0.0
-                envelope_state = "IDLE"
-
-        envelope_buffer[i] = current_amplitude
-
-    final_wave = wave * envelope_buffer
-
-    #dopo aver riempito il buffer, salviamo la fase attuale sommata ai 512 Δϕ
-    #pronta ad essere utilizzata per il prossimo buffer.
-    # -- % (2 * np.pi) --  per evitare che il numero non incrementi a dismisura
-    current_phase = (current_phase + frames * phase_increment) % (2 * np.pi)
-
-    #formatto
-    outdata[:] = final_wave.reshape(-1, 1).astype(np.float32)
-
-
-print("SYNTH ON: CTR+C FOR SHUT OFF")
-
-try: 
-    #apriamo stream audio passando la callback precedentemente costruita
+try:
     with sd.OutputStream(samplerate=fs, channels=1, callback=process_audio):
-
-    #loop <infinito per emulare la pressione ed il rilascio di una nota (ascolto dell'ADSR)
         while True:
             print("NOTE ON")
-            envelope_state = "ATTACK"
-
+            vocal_voice.trigger_on() #quindi quando avvio programma la callback inizia a girare, la voce è in IDLE (non suona). non appena attivo il trigger suona iniziando dall'attack
             time.sleep(1.0)
-
+            
             print("NOTE OFF")
-            envelope_state = "RELEASE"
-
+            vocal_voice.trigger_off()
             time.sleep(1.0)
-    #> fineloop
 
-#CTRL+C per interrompere    
 except KeyboardInterrupt:
-    print("STOPPED.") 
+    print("\nSTOPPED.")
